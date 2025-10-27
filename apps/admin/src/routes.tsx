@@ -7,10 +7,6 @@ import { routes as activityPubRoutes, APP_ROUTE_PREFIX as activityPubAppRoutePre
 import { EmberFallback } from "./ember-bridge";
 
 export const routes: RouteObject[] = [
-    {
-        path: "/",
-        element: <div>Hello World</div>
-    },
     ...postRoutes[0].children!.filter(route => route.path !== "*"),
     {
         path: `${statsAppRoutePrefix}`,
