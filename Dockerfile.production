@@ -1,0 +1,115 @@
+ARG NODE_VERSION=22.13.1
+
+# --------------------
+# Base Image
+# --------------------
+FROM node:$NODE_VERSION-bullseye-slim AS base
+RUN apt-get update && \
+    apt-get install -y \
+    build-essential \
+    curl \
+    python3 \
+    && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt clean
+
+# --------------------
+# Dependencies Layer
+# --------------------
+FROM base AS dependencies
+WORKDIR /home/ghost
+
+# Copy root package files
+COPY package.json yarn.lock ./
+
+# Copy all package.json files for workspaces (needed for yarn install)
+COPY apps/stats/package.json apps/stats/
+COPY apps/activitypub/package.json apps/activitypub/
+COPY apps/admin-x-design-system/package.json apps/admin-x-design-system/
+COPY apps/admin-x-framework/package.json apps/admin-x-framework/
+COPY apps/admin-x-settings/package.json apps/admin-x-settings/
+COPY apps/announcement-bar/package.json apps/announcement-bar/
+COPY apps/comments-ui/package.json apps/comments-ui/
+COPY apps/portal/package.json apps/portal/
+COPY apps/posts/package.json apps/posts/
+COPY apps/shade/package.json apps/shade/
+COPY apps/signup-form/package.json apps/signup-form/
+COPY apps/sodo-search/package.json apps/sodo-search/
+COPY e2e/package.json e2e/
+COPY ghost/admin/lib/asset-delivery/package.json ghost/admin/lib/asset-delivery/
+COPY ghost/admin/lib/ember-power-calendar-moment/package.json ghost/admin/lib/ember-power-calendar-moment/
+COPY ghost/admin/lib/ember-power-calendar-utils/package.json ghost/admin/lib/ember-power-calendar-utils/
+COPY ghost/admin/package.json ghost/admin/
+COPY ghost/core/package.json ghost/core/
+COPY ghost/i18n/package.json ghost/i18n/
+
+# Copy patches directory so patch-package can apply patches during yarn install
+COPY patches patches
+
+# Install all dependencies
+RUN yarn install --frozen-lockfile
+
+# --------------------
+# Build Layer
+# --------------------
+FROM dependencies AS builder
+WORKDIR /home/ghost
+
+# Copy all source code
+COPY . .
+
+# Build all packages using Nx (handles dependencies automatically)
+RUN yarn build
+
+# --------------------
+# Production Runtime
+# --------------------
+FROM node:$NODE_VERSION-bullseye-slim AS production
+WORKDIR /home/ghost
+
+# Copy root package files and workspace structure needed for yarn install
+COPY package.json yarn.lock ./
+COPY ghost/core/package.json ghost/core/
+COPY ghost/i18n/package.json ghost/i18n/
+COPY patches patches
+
+# Install only production dependencies from root (yarn workspaces will handle it)
+RUN yarn install --frozen-lockfile --production --ignore-scripts && \
+    yarn cache clean
+
+# Copy built Ghost core (overwrites package.json, but that's fine)
+COPY --from=builder /home/ghost/ghost/core ./ghost/core
+
+# Copy built admin
+COPY --from=builder /home/ghost/ghost/admin/dist ./ghost/admin/dist
+COPY --from=builder /home/ghost/ghost/core/core/built/admin ./ghost/core/core/built/admin
+
+# Copy i18n locales
+COPY --from=builder /home/ghost/ghost/i18n/locales ./ghost/i18n/locales
+
+# Copy public app bundles (UMD bundles)
+COPY --from=builder /home/ghost/apps/portal/umd ./apps/portal/umd
+COPY --from=builder /home/ghost/apps/comments-ui/umd ./apps/comments-ui/umd
+COPY --from=builder /home/ghost/apps/signup-form/umd ./apps/signup-form/umd
+COPY --from=builder /home/ghost/apps/sodo-search/umd ./apps/sodo-search/umd
+COPY --from=builder /home/ghost/apps/announcement-bar/umd ./apps/announcement-bar/umd
+
+# Set working directory to ghost/core for running
+WORKDIR /home/ghost/ghost/core
+
+# Set production environment
+ENV NODE_ENV=production
+
+# Create content directory
+RUN mkdir -p content
+
+# Expose Ghost port
+EXPOSE 2368
+
+# Use entrypoint script
+COPY railway-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/railway-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/railway-entrypoint.sh"]
+CMD ["node", "index.js"]
+
